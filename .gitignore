@@ -1,2 +1,5 @@
 pkg/
 *-handin.tar.gz
+
+# Editor / local IDE settings (not shared)
+.vscode/

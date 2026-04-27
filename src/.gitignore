@@ -1,5 +1,7 @@
 *.*/
 main/mr-tmp/
+# MapReduce tests create this under mr/ (see mr_test.go mkOut)
+mr/mr-tmp-*/
 mrtmp.*
 824-mrinput-*.txt
 /main/diff.out

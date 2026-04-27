@@ -18,8 +18,8 @@ type Coordinator struct {
 	mapFiles []string
 	nReduce  int // finally, we generate nReduce files.
 
-	mapTasks   []TaskMeta // record the state of a task.
-	reduceTask []int
+	mapTasks    []TaskMeta // record the state of a task.
+	reduceTasks []TaskMeta
 
 	mapTaskDoneNumber    int // how many tasks are done.
 	reduceTaskDoneNumber int
@@ -50,11 +50,9 @@ func (c *Coordinator) server(sockname string) {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.isMapDone && c.isReduceDone
 }
 
 // a idle worker invoke this RPC to get a task.
@@ -65,11 +63,79 @@ func (c *Coordinator) AskForTasksHandler(args *AskTaskArgs, reply *AskTaskReply)
 	defer c.mu.Unlock()
 
 	// traverse the map tasks.
+	// mapping phase
+	if !c.isMapDone {
+		for index := 0; index < len(c.mapTasks); index++ {
+			if (c.mapTasks[index].TaskStatus == Idle) ||
+				(c.mapTasks[index].TaskStatus == InProgress && time.Since(c.mapTasks[index].StartTime) > 10*time.Second) {
+				reply.TaskType = MapTask
+				reply.TaskID = index
+				reply.FileName = c.mapFiles[index]
+				reply.NMap = len(c.mapTasks)
+				reply.NReduce = c.nReduce
 
+				c.mapTasks[index].TaskStatus = InProgress
+				c.mapTasks[index].StartTime = time.Now()
+				return nil
+			}
+		}
+
+		// all map tasks are inprogress but not expired or just completed.
+		reply.TaskType = WaitTask
+		return nil
+	}
+
+	// currently, all map tasks are done.
+	if !c.isReduceDone {
+		for index := 0; index < c.nReduce; index++ {
+			if (c.reduceTasks[index].TaskStatus == Idle) ||
+				(c.reduceTasks[index].TaskStatus == InProgress && time.Since(c.reduceTasks[index].StartTime) > 10*time.Second) {
+				reply.TaskType = ReduceTask
+				reply.TaskID = index
+				// Reduce reads mr-*-<TaskID>; nReduce is unrelated to len(mapFiles).
+				reply.NMap = len(c.mapTasks)
+				reply.NReduce = c.nReduce
+				c.reduceTasks[index].TaskStatus = InProgress
+				c.reduceTasks[index].StartTime = time.Now()
+				return nil
+			}
+		}
+
+		reply.TaskType = WaitTask
+		return nil
+	}
+
+	// all map tasks and reduce tasks are completed.
+	reply.TaskType = ExitTask
 	return nil
 }
 
+// when a task is done, the worker will invoke this.
 func (c *Coordinator) ReportTaskDoneHandler(args *ReportTaskArgs, reply *ReportTaskReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	switch args.TaskType {
+	case MapTask:
+		// avoid a task is executed several times.
+		if c.mapTasks[args.TaskID].TaskStatus == Completed {
+			return nil
+		}
+		c.mapTasks[args.TaskID].TaskStatus = Completed
+		c.mapTaskDoneNumber++
+		if c.mapTaskDoneNumber == len(c.mapTasks) {
+			c.isMapDone = true
+		}
+	case ReduceTask:
+		if c.reduceTasks[args.TaskID].TaskStatus == Completed {
+			return nil
+		}
+		c.reduceTasks[args.TaskID].TaskStatus = Completed
+		c.reduceTaskDoneNumber++
+		if c.reduceTaskDoneNumber == c.nReduce {
+			c.isReduceDone = true
+		}
+	}
 
 	return nil
 }
@@ -84,7 +150,7 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 		mapFiles:             append([]string(nil), files...),
 		nReduce:              nReduce,
 		mapTasks:             make([]TaskMeta, len(files)),
-		reduceTask:           make([]int, nReduce),
+		reduceTasks:          make([]TaskMeta, nReduce),
 		mapTaskDoneNumber:    0,
 		reduceTaskDoneNumber: 0,
 		isMapDone:            false,
