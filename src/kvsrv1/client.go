@@ -1,6 +1,8 @@
 package kvsrv
 
 import (
+	"time"
+
 	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 	tester "6.5840/tester1"
@@ -35,7 +37,10 @@ func (ck *Clerk) Get(key string) (string, rpc.Tversion, rpc.Err) {
 
 	reply := rpc.GetReply{}
 
-	ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply)
+	// 直接进行无限的重发，因为不会更改server的状态
+	for ck.clnt.Call(ck.server, "KVServer.Get", &args, &reply) != true {
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	return reply.Value, reply.Version, reply.Err
 }
@@ -66,7 +71,22 @@ func (ck *Clerk) Put(key, value string, version rpc.Tversion) rpc.Err {
 
 	reply := rpc.PutReply{}
 
-	ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply)
+	retried := false
 
-	return reply.Err
+	for ck.clnt.Call(ck.server, "KVServer.Put", &args, &reply) != true {
+		retried = true
+		// 重试之前可以稍微等待一下
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if reply.Err != rpc.ErrVersion {
+		return reply.Err
+	} else {
+		if retried {
+			// 目的就是在这里给上层一个更加明确的语义
+			return rpc.ErrMaybe
+		} else {
+			return rpc.ErrVersion
+		}
+	}
 }
